@@ -8,7 +8,7 @@ import xarray as xr
 import numpy as np
 # from docker import DockerClient, from_env
 # import spython.main as SingularityClient
-import subprocess, json
+import subprocess, json, uuid
 
 from arkitekt_next import background, easy, register, startup
 from rekuest_next.agents.context import context
@@ -213,7 +213,7 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
     # docker = context.docker
     caddy_url = context.gateway
     network = context.network
-    container_name = "random-name"
+    container_name = str(uuid.uuid4())
     flavour = release.flavours[0]
 
     progress(0)
@@ -239,7 +239,7 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
     )
 
     process = subprocess.run(
-        ["apptainer", "instance", "start", "docker://jhnnsrs/renderer:0.0.1-vanilla", container_name],
+        ["apptainer", "instance", "start", f"docker://{flavour.image}", container_name],
         text=True,
     )
 
@@ -259,11 +259,9 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
     # COnver step here for apptainer
 
     print("Running the command")
-    with open("apptainer.log", "w") as f:
+    with open(f"apptainer-{z.id}.log", "w") as f:
         process = subprocess.run(
-            ["apptainer", "exec", "--pwd", "/app", "instance://"+container_name, "arkitekt-next", "run", "dev", "--url", "arkitekt.compeng.uni-frankfurt.de"],
-            # ["apptainer", "instance", "run", "--pwd", "/app", "--writable-tmpf", "docker://jhnnsrs/renderer:0.0.1-vanilla", container_name, "arkitekt-next", "run", "dev", "--url", "arkitekt.compeng.uni-frankfurt.de"],
-            # capture_output=True,
+            ["apptainer", "exec", "--pwd", "/app", "instance://"+container_name, "arkitekt-next", "run", "prod", "--url", "arkitekt.compeng.uni-frankfurt.de"],
             stdout=f,
             )
 
