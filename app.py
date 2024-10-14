@@ -10,6 +10,7 @@ import numpy as np
 # import spython.main as SingularityClient
 import subprocess, json, uuid
 
+from fakts import get_current_fakts
 from arkitekt_next import background, easy, register, startup
 from rekuest_next.agents.context import context
 from kabinet.api.schema import (
@@ -38,13 +39,6 @@ from unlok_next.api.schema import (
     create_client,
 )
 
-# ToDo: For full functionality, we need:
-# - an automatic unique name generator for the containers (currently hardcoded to random-name)
-# - currently containers unknown by arkitekt are killed by the checker I believe
-# - currently running a bit of a mixture between apptainer instance handling and subprocess
-#   This should probably be made consistent. Problem is that the apptainer instance logging doesn't seem to work as expected.
-#   Also using subprocess for the handling might make it easier to port to other container systems because the handling is already there.
-
 ME = os.getenv("INSTANCE_ID", "FAKE GOD")
 ARKITEKT_GATEWAY = os.getenv("ARKITEKT_GATEWAY", "caddy")
 ARKITEKT_NETWORK = os.getenv("ARKITEKT_NETWORK", "next_default")
@@ -58,6 +52,7 @@ class ArkitektContext:
     instance_id: str
     gateway: str = field(default=ARKITEKT_GATEWAY)
     network: str = field(default=ARKITEKT_NETWORK)
+    endpoint_url: str = field(default="arkitekt.compeng.uni-frankfurt.de")
 
 
 @startup
@@ -65,7 +60,7 @@ async def on_startup(instance_id) -> ArkitektContext:
     print("Starting up on_startup", instance_id)
     print("Check sfosr scontainers that are no longer pods?")
 
-    x = await adeclare_backend(instance_id=instance_id, name="::", kind="apptainer")
+    x = await adeclare_backend(instance_id=instance_id, name="Apptainer-Deployer", kind="apptainer")
 
     return ArkitektContext(
         docker=None,
@@ -80,15 +75,15 @@ async def on_startup(instance_id) -> ArkitektContext:
 async def container_checker(context: ArkitektContext):
     print("Starting up container_checker")
     print("Check for containers that are dno longer pods?")
-
     pod_status: Dict[str, PodStatus] = {}
-
     while True:
         apptainer_instance_list = subprocess.run(["apptainer", "instance", "list", "--json"], text=True, capture_output=True)
         containers = json.loads(apptainer_instance_list.stdout)
         for container in containers["instances"]:
+            if not container["instance"].startswith("arkitekt-"):
+                break
             try:
-                old_status = pod_status.get(container["instance"], None)
+                old_status = pod_status.get(container["instance"], None) # I am not sure if this is the right way to do this
                 print("Pod Status: ",old_status)
                 print(f"Container Checker currently checking {container['instance']} of {[d['instance'] for d in containers['instances'] if 'instance' in d]}")
                 if container['instance'] != old_status:
@@ -98,9 +93,7 @@ async def container_checker(context: ArkitektContext):
                         instance_id=context.instance_id,
                     )
                     print("Updated Container Status")
-
-                    # with open(container["logOutPath"], "r") as f: # If apptainer instance logging is working
-                    with open("apptainer.log", "r") as f:
+                    with open(f"apptainer-{container['instance']}.log", "r") as f:
                         logs = f.read()
                         await adump_logs(p.id, logs)
             except Exception as e:
@@ -114,59 +107,36 @@ async def container_checker(context: ArkitektContext):
 
 @register(name="dump_logs")
 async def dump_logs(context: ArkitektContext, pod: Pod) -> Pod:
-    print(pod.pod_id)
-    apptainer_instance_list = subprocess.run(["apptainer", "instance", "list", "--json"], text=True, capture_output=True)
-    containers = json.loads(apptainer_instance_list.stdout)
-    for container in containers["instances"]:
-        if container["instance"] == pod.pod_id:
-            # with open(containers['instance']['logOutPath'], "r") as f: # If apptainer instance logging is working
-            with open("apptainer.log", "r") as f:
-                logs = f.read()
-    await adump_logs(pod.id, logs)
-
+    with open(f"apptainer-{pod.pod_id}.log", "r") as f:
+        logs = f.read()
+        await adump_logs(pod.id, logs)
     return pod
 
 
 @register(name="Runner")
-def run(deployment: Deployment, context: ArkitektContext) -> Pod:
+def run(deployment: Deployment, context: ArkitektContext, pod: Pod) -> Pod:
     print("\tRunner:\n",deployment)
-    # container = context.docker.containers.run(
-    #     deployment.local_id, detach=True, labels={"arkitekt.live.kabinet": ME}
-    # )
-    container_name = "random-name"
-    process = subprocess.run(
-        ["apptainer", "instance", "start", "--writable-tmpfs", "docker://jhnnsrs/renderer:0.0.1-vanilla", container_name],
-        text=True,
-    )
-
-    test = useInstanceID()
-    print(test)
-
     z = create_pod(
-        deployment=deployment, instance_id=test, local_id=container_name
+        deployment=deployment, instance_id=useInstanceID(), local_id=pod.pod_id
     )
-
     print(z)
     return z
 
 
-# ToDo: Restarting a container is not supported by apptainer
-# might be possible with a workaround
 @register(name="Restart")
 def restart(pod: Pod, context: ArkitektContext) -> Pod:
     """Restart
 
     Restarts a pod by stopping and starting it again.
 
-
     """
-
-    print("\tRunning\n")
-    container = context.docker.containers.get(pod.pod_id)
-
-    progress(50)
-    container.restart()
-    progress(100)
+    print(f"stopping container {container_name}")
+    subprocess.run(["apptainer", "instance", "stop", pod.pod_id])
+    print(f"(Re-)starting container {container_name}")
+    subprocess.run(
+        ["apptainer", "instance", "start", pod.deployment.flavour.image, pod.pod_id],
+        text=True,
+    )
     return pod
 
 
@@ -213,13 +183,12 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
     # docker = context.docker
     caddy_url = context.gateway
     network = context.network
-    container_name = str(uuid.uuid4())
+    container_name = "arkitekt-"+str(uuid.uuid4())
     flavour = release.flavours[0]
 
     progress(0)
 
-    print("OAINDFOAIWNDOAINWDOIANWd")
-
+    # ToDo: How should this be handled see https://github.com/alexschroeter/apptainer-deployer/issues/2
     print(
         [Requirement(key=key, **value) for key, value in flavour.requirements.items()]
     )
@@ -239,7 +208,7 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
     )
 
     process = subprocess.run(
-        ["apptainer", "instance", "start", f"docker://{flavour.image}", container_name],
+        ["apptainer", "instance", "start", "--writable-tmpfs", f"docker://{flavour.image}", container_name],
         text=True,
     )
 
@@ -256,29 +225,25 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
 
     print("Arkitekt_Gateway Variable: ", os.getenv("ARKITEKT_GATEWAY"))
 
-    # COnver step here for apptainer
-
-    print("Running the command")
-    with open(f"apptainer-{z.id}.log", "w") as f:
-        process = subprocess.run(
-            ["apptainer", "exec", "--pwd", "/app", "instance://"+container_name, "arkitekt-next", "run", "prod", "--url", "arkitekt.compeng.uni-frankfurt.de"],
-            stdout=f,
-            )
-
-    print(process)
-    print(f"Deployed container with id {container_name} on network {network} with token {token} and target url {caddy_url}")
-
-    progress(90)
-
-    context.docker = container_name
-
     z = create_pod(
         deployment=deployment, instance_id=useInstanceID(), local_id=container_name
     )
 
-    print("Pod Created during Deploy: ",z)
+    print("Running the command")
+    with open(f"apptainer-{container_name}.log", "w") as f:
+        process = subprocess.run(
+            ["apptainer", "exec", "--pwd", "/app", "instance://"+container_name, "arkitekt-next", "run", "prod", "--url", f"{context.endpoint_url}"],
+            stdout=f,
+            )
 
+    print(process)
+    print(f"Deployed container with id {container_name} on network {network} with token {token} and target url {str(context.endpoint_url)}")
+
+    progress(90)
+
+    print("Pod Created during Deploy: ",z)
     return z
+
 
 @register(name="Progresso")
 def progresso():
