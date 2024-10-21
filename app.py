@@ -80,8 +80,8 @@ async def container_checker(context: ArkitektContext):
         apptainer_instance_list = subprocess.run(["apptainer", "instance", "list", "--json"], text=True, capture_output=True)
         containers = json.loads(apptainer_instance_list.stdout)
         for container in containers["instances"]:
-            if not container["instance"].startswith("arkitekt-"):
-                break
+            # if not container["instance"].startswith("arkitekt-"):
+            #     break
             try:
                 old_status = pod_status.get(container["instance"], None) # I am not sure if this is the right way to do this
                 print("Pod Status: ",old_status)
@@ -207,10 +207,17 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
         )
     )
 
-    process = subprocess.run(
+    # Because dockers WORKDIR is not propagated to apptainer we need to get it from the docker image
+    # docker inspect only works with a running docker daemon so we use skopeo (docker because we don't want to install something on the host)
+    # docker_inspect_workdir = subprocess.run(["skopeo", "inspect", "--tls-verify=false", "--config", "--format='{{ .Config.WorkingDir }}'", f"docker://{flavour.image}"], text=True, capture_output=True)
+    # apptainer --silent exec docker://quay.io/skopeo/stable:latest skopeo inspect --tls-verify=false --config --format='{{ .Config.WorkingDir }}' docker://alexanderschroeter/workdir-test
+    docker_inspect_workdir = subprocess.run(["apptainer", "--silent", "exec", "docker://quay.io/skopeo/stable:latest", "skopeo", "inspect", "--tls-verify=false", "--config", "--format='{{ .Config.WorkingDir }}'", f"docker://{flavour.image}"], text=True, capture_output=True)
+
+    start_apptainer_instance = subprocess.run(
         ["apptainer", "instance", "start", "--writable-tmpfs", f"docker://{flavour.image}", container_name],
         text=True,
     )
+    print(f"started instance with id {container_name}")
 
     progress(10)
 
@@ -232,7 +239,7 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
     print("Running the command")
     with open(f"apptainer-{container_name}.log", "w") as f:
         process = subprocess.run(
-            ["apptainer", "exec", "--pwd", "/app", "instance://"+container_name, "arkitekt-next", "run", "prod", "--url", f"{context.endpoint_url}"],
+            ["apptainer", "exec", "--pwd", str(docker_inspect_workdir.stdout.replace("'","").replace("\n","")), "instance://"+container_name, "arkitekt-next", "run", "prod", "--url", f"{context.endpoint_url}"],
             stdout=f,
             )
 
@@ -253,3 +260,5 @@ def progresso():
         time.sleep(1)
 
     return None
+
+'def gpu_
