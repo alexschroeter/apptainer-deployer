@@ -236,10 +236,15 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
         deployment=deployment, instance_id=useInstanceID(), local_id=container_name
     )
 
+    # print("#######", flavour.gpu_type)
+    apptainer_run_command = ["apptainer", "exec", "--pwd", str(docker_inspect_workdir.stdout.replace("'","").replace("\n","")), "instance://"+container_name, "arkitekt-next", "run", "prod", "--url", f"{context.endpoint_url}"]
+    apptainer_run_command = apptainer_run_command[:4] + gpu_parameter("nvidia") + apptainer_run_command[4:]
+    print(apptainer_run_command)
+
     print("Running the command")
     with open(f"apptainer-{container_name}.log", "w") as f:
         process = subprocess.run(
-            ["apptainer", "exec", "--pwd", str(docker_inspect_workdir.stdout.replace("'","").replace("\n","")), "instance://"+container_name, "arkitekt-next", "run", "prod", "--url", f"{context.endpoint_url}"],
+            apptainer_run_command,
             stdout=f,
             )
 
@@ -261,4 +266,12 @@ def progresso():
 
     return None
 
-'def gpu_
+def gpu_parameter(gpu_type: str = None):
+    parameters = []
+    if gpu_type == "nvidia":
+        parameters.append("--nv")
+    if gpu_type == "amd":
+        pass
+    if gpu_type == "intel":
+        pass
+    return parameters
