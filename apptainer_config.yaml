@@ -1,0 +1,8 @@
+APPTAINER_BIN: /usr/local/bin/apptainer
+
+# adapt your apptainer configuration to your needs
+# https://apptainer.org/docs/user/main/appendix.html
+
+# e.g.:
+# APPTAINER_TMPDIR: /scratch/.apptainer_tmpdir
+# APPTAINER_CACHEDIR: /scratch/.apptainer_cachedir
