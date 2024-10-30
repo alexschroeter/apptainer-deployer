@@ -1,8 +1,9 @@
-APPTAINER_BIN: /usr/local/bin/apptainer
+ARKITEKT_APPTAINER_BIN: /home/aschroeter/.local/apptainer/bin/apptainer
+ARKITEKT_FLAVOUR: cuda,rocm,oneapi
 
 # adapt your apptainer configuration to your needs
 # https://apptainer.org/docs/user/main/appendix.html
 
 # e.g.:
-# APPTAINER_TMPDIR: /scratch/.apptainer_tmpdir
-# APPTAINER_CACHEDIR: /scratch/.apptainer_cachedir
+APPTAINER_TMPDIR: /home/aschroeter/.apptainer_tmpdir
+APPTAINER_CACHEDIR: /home/aschroeter/.apptainer_cachedir

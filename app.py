@@ -43,7 +43,7 @@ ME = os.getenv("INSTANCE_ID", "FAKE GOD")
 ARKITEKT_GATEWAY = os.getenv("ARKITEKT_GATEWAY", "caddy")
 ARKITEKT_NETWORK = os.getenv("ARKITEKT_NETWORK", "next_default")
 
-APPTAINER_CONFIG = yaml.safe_load(open("apptainer_config.yaml"))
+ARKITEKT_APPTAINER_CONFIG = yaml.safe_load(open("apptainer_config.yaml"))
 
 @context
 @dataclass
@@ -78,7 +78,7 @@ async def container_checker(context: ArkitektContext):
     print("Check for containers that are dno longer pods?")
     pod_status: Dict[str, PodStatus] = {}
     while True:
-        apptainer_instance_list = subprocess.run([APPTAINER_CONFIG["APPTAINER_BIN"], "instance", "list", "--json"], text=True, capture_output=True)
+        apptainer_instance_list = subprocess.run([ARKITEKT_APPTAINER_CONFIG["ARKITEKT_APPTAINER_BIN"], "instance", "list", "--json"], text=True, capture_output=True)
         containers = json.loads(apptainer_instance_list.stdout)
         for container in containers["instances"]:
             # if not container["instance"].startswith("arkitekt-"):
@@ -99,7 +99,7 @@ async def container_checker(context: ArkitektContext):
                         await adump_logs(p.id, logs)
             except Exception as e:
                 print("Error updating pod status", e)
-                subprocess.run([APPTAINER_CONFIG["APPTAINER_BIN"], "instance", "stop", container["instance"]])
+                subprocess.run(_get_command(variant="instance_stop", context=context, pod=p))
         else:
             if containers == []: print("No containers to check")
 
@@ -131,14 +131,14 @@ def restart(pod: Pod, context: ArkitektContext) -> Pod:
     Restarts a pod by stopping and starting it again.
 
     """
-    print(f"stopping container {container_name}")
-    subprocess.run([APPTAINER_CONFIG["APPTAINER_BIN"], "instance", "stop", pod.pod_id])
-    print(f"(Re-)starting container {container_name}")
-    subprocess.run(
-        [APPTAINER_CONFIG["APPTAINER_BIN"], "instance", "start", pod.deployment.flavour.image.image_string, pod.pod_id],
-        env=APPTAINER_CONFIG,
-        text=True,
-    )
+    # print(f"stopping container {container_name}")
+    # subprocess.run(_get_command(variant="instance_stop"))
+    # print(f"(Re-)starting container {container_name}")
+    # subprocess.run(
+    #     [ARKITEKT_APPTAINER_CONFIG["ARKITEKT_APPTAINER_BIN"], "instance", "start", pod.deployment.flavour.image.image_string, pod.pod_id],
+    #     env=dict(os.environ)| ARKITEKT_APPTAINER_CONFIG,
+    #     text=True,
+    # )
     return pod
 
 
@@ -164,7 +164,7 @@ def stop(pod: Pod, context: ArkitektContext) -> Pod:
     Stops a pod by stopping and does not start it again.
 
     """
-    subprocess.run([APPTAINER_CONFIG["APPTAINER_BIN"], "instance", "stop", str(pod.pod_id)])
+    subprocess.run(_get_command(variant="instance_stop", context=context, pod=pod))
     return pod
 
 
@@ -175,7 +175,7 @@ def remove(pod: Pod, context: ArkitektContext) -> Pod:
     Remove a pod by stopping and removing it.
 
     """
-    subprocess.run([APPTAINER_CONFIG["APPTAINER_BIN"], "instance", "stop", str(pod.pod_id)])
+    subprocess.run(_get_command(variant="instance_stop", context=context, pod=pod))
     return pod
 
 
@@ -186,7 +186,8 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
     caddy_url = context.gateway
     network = context.network
     container_name = "arkitekt-"+str(uuid.uuid4())
-    flavour = release.flavours[0]
+    print("\nFALVOUR FLAV\n\n",release.flavours, "\n\n\n")
+    flavour = _get_flavour(release.flavours)
 
     progress(0)
 
@@ -206,15 +207,10 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
         )
     )
 
-    # Because dockers WORKDIR is not propagated to apptainer we need to get it from the docker image
-    # docker inspect only works with a running docker daemon so we use skopeo (docker because we don't want to install something on the host)
-    # docker_inspect_workdir = subprocess.run(["skopeo", "inspect", "--tls-verify=false", "--config", "--format='{{ .Config.WorkingDir }}'", f"docker://{flavour.image.image_string}"], text=True, capture_output=True)
-    # apptainer --silent exec docker://quay.io/skopeo/stable:latest skopeo inspect --tls-verify=false --config --format='{{ .Config.WorkingDir }}' docker://alexanderschroeter/workdir-test
-    docker_inspect_workdir = subprocess.run(["apptainer", "--silent", "exec", "docker://quay.io/skopeo/stable:latest", "skopeo", "inspect", "--tls-verify=false", "--config", "--format='{{ .Config.WorkingDir }}'", f"docker://{flavour.image.image_string}"], text=True, capture_output=True)
-
+    print(_get_command(variant="start_instance", context=context, container_name=container_name, release=release))
     start_apptainer_instance = subprocess.run(
-        [APPTAINER_CONFIG["APPTAINER_BIN"], "instance", "start", "--writable-tmpfs", f"docker://{flavour.image.image_string}", container_name],
-        env=APPTAINER_CONFIG,
+        _get_command(variant="start_instance", context=context, container_name=container_name, release=release),
+        env=dict(os.environ)| ARKITEKT_APPTAINER_CONFIG,
         text=True,
     )
     print(f"started instance with id {container_name}")
@@ -237,15 +233,15 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
     )
 
     # print("#######", flavour.gpu_type)
-    apptainer_run_command = [APPTAINER_CONFIG["APPTAINER_BIN"], "exec", "--pwd", str(docker_inspect_workdir.stdout.replace("'","").replace("\n","")), "instance://"+container_name, "arkitekt-next", "run", "prod", "--url", f"{context.endpoint_url}"]
-    apptainer_run_command = apptainer_run_command[:4] + gpu_parameter("nvidia") + apptainer_run_command[4:]
-    print(apptainer_run_command)
-
+    # apptainer_run_command = [ARKITEKT_APPTAINER_CONFIG["ARKITEKT_APPTAINER_BIN"], "exec", "--pwd", str(docker_inspect_workdir.stdout.replace("'","").replace("\n","")), "instance://"+container_name, "arkitekt-next", "run", "prod", "--url", f"{context.endpoint_url}"]
+    # apptainer_run_command = apptainer_run_command[:4] + gpu_parameter("nvidia") + apptainer_run_command[4:]
+    # # apptainer_run_command = ["env"]
+    # print(apptainer_run_command)
     print("Running the command")
     with open(f"apptainer-{container_name}.log", "w") as f:
         process = subprocess.run(
-            apptainer_run_command,
-            env=APPTAINER_CONFIG,
+            _get_command(variant="exec_command", release=release, context=context, container_name=container_name, pod=z),
+            env=dict(os.environ)| ARKITEKT_APPTAINER_CONFIG,
             stdout=f,
             )
 
@@ -267,12 +263,96 @@ def progresso():
 
     return None
 
-def gpu_parameter(gpu_type: str = None):
-    parameters = []
-    if gpu_type == "nvidia":
-        parameters.append("--nv")
-    if gpu_type == "amd":
-        pass
-    if gpu_type == "intel":
-        pass
-    return parameters
+
+def _get_command(variant: str, context, container_name=None, pod=None, release=None) -> list:
+    """
+
+    """
+    # ToDo: This should only happen once. So move it outside of this function -> probably to deploy
+    # Because dockers WORKDIR is not propagated to apptainer we need to get it from the docker image
+    # docker inspect only works with a running docker daemon so we use skopeo (docker because we don't want to install something on the host)
+    # docker_inspect_workdir = subprocess.run(["skopeo", "inspect", "--tls-verify=false", "--config", "--format='{{ .Config.WorkingDir }}'", f"docker://{flavour.image.image_string}"], text=True, capture_output=True)
+    # apptainer --silent exec docker://quay.io/skopeo/stable:latest skopeo inspect --tls-verify=false --config --format='{{ .Config.WorkingDir }}' docker://alexanderschroeter/workdir-test
+    docker_inspect_workdir = subprocess.run(["apptainer", "--silent", "exec", "docker://quay.io/skopeo/stable:latest", "skopeo", "inspect", "--tls-verify=false", "--config", "--format='{{ .Config.WorkingDir }}'", f"docker://{_get_flavour(release.flavours).image.image_string}"], text=True, capture_output=True)
+
+    command = None
+    if variant == "start_instance":
+        command = [
+            _get_apptainer_binary(),
+            "instance",
+            "start",
+            "--writable-tmpfs",
+            f"docker://{_get_flavour(release.flavours).image.image_string}",
+            container_name,
+        ]
+        command = _get_apptainer_params(command=command, flavour=_get_flavour(release.flavours), position=3)
+        print("Command: ", command)
+    if variant == "stop_instance":
+        command = [
+            _get_apptainer_binary(),
+            "instance",
+            "stop",
+            str(pod.pod_id),
+        ]
+    if variant == "exec_command":
+        command = [
+            _get_apptainer_binary(),
+            "exec",
+            "--pwd",
+            str(docker_inspect_workdir.stdout.replace("'","").replace("\n","")),
+            "instance://"+container_name,
+            "arkitekt-next",
+            "run",
+            "prod",
+            "--url",
+            f"{context.endpoint_url}",
+        ]
+        command = _get_apptainer_params(command=command, flavour=_get_flavour(release.flavours), position=4)
+    return command
+
+
+def _get_apptainer_binary():
+    binary = "/usr/local/bin/apptainer"
+    if ARKITEKT_APPTAINER_CONFIG["ARKITEKT_APPTAINER_BIN"]:
+        print("Using apptainer binary from config")
+        binary = ARKITEKT_APPTAINER_CONFIG["ARKITEKT_APPTAINER_BIN"]
+
+    try:
+        subprocess.run([binary, "--version"], text=True, capture_output=True)
+    except Exception as e:
+        print("Apptainer binary not found", e)
+
+    return binary
+
+
+def _get_apptainer_params(command, flavour, position: int = -1):
+    params = {
+        "cuda": "--nv",
+        "amd": None,
+        "oneapi": None,
+    }
+    if params[flavour.name] != None:
+        command.insert(position, params[flavour.name])
+    return command
+
+
+def _get_flavour(flavours):
+    """
+    Choose the flavour of the deployment from the list of prefered flavours choose the next best flavour.
+    Currently the first available flavour of the app which is also in the list of flavours in the apptainer_config.yaml is chosen.
+
+    ToDo:
+    - Implement a way to choose the **best** flavour
+        - Round robin the list of flavours set in the apptainer_config.yaml
+        - Check for supported hardware and software
+        - Check already used resources
+    """
+
+    def find_flavour(flavours, preferred_order):
+        return next((flavour for name in preferred_order for flavour in flavours if flavour.name == name), None)
+
+    return find_flavour(flavours, list(ARKITEKT_APPTAINER_CONFIG["ARKITEKT_FLAVOUR"].split(",")))
+
+
+if __name__ == "__main__":
+    pass
