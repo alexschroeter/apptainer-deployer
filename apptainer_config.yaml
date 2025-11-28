@@ -1,9 +1,15 @@
-ARKITEKT_APPTAINER_BIN: /home/aschroeter/.local/apptainer/bin/apptainer
-ARKITEKT_FLAVOUR: cuda,rocm,oneapi
+# ARKITEKT_APPTAINER_BIN: /home/aschroeter/.local/apptainer/bin/apptainer
+ARKITEKT_APPTAINER_BIN: /usr/bin/apptainer
+# ARKITEKT_FLAVOUR: cuda, rocm, oneapi # prioritized in this order
+ARKITEKT_FLAVOUR: cuda
 
 # adapt your apptainer configuration to your needs
 # https://apptainer.org/docs/user/main/appendix.html
 
 # e.g.:
-APPTAINER_TMPDIR: /home/aschroeter/.apptainer_tmpdir
-APPTAINER_CACHEDIR: /home/aschroeter/.apptainer_cachedir
+# For cluster resources you often want this to be on scratch space
+# APPTAINER_TMPDIR: /scratch/awilhel/.apptainer_tmpdir
+# APPTAINER_CACHEDIR: /scratch/awilhel/.apptainer_cachedir
+
+APPTAINER_TMPDIR: /home/awilhel/.apptainer_tmpdir
+APPTAINER_CACHEDIR: /home/awilhel/.apptainer_cachedir

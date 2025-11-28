@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import AsyncGenerator, Dict
@@ -10,7 +11,6 @@ import numpy as np
 # import spython.main as SingularityClient
 import subprocess, json, uuid, yaml
 
-from fakts import get_current_fakts
 from arkitekt_next import background, easy, register, startup
 from rekuest_next.agents.context import context
 from kabinet.api.schema import (
@@ -27,7 +27,7 @@ from kabinet.api.schema import (
     delete_pod,
 )
 from mikro_next.api.schema import Image, from_array_like
-from rekuest_next.actors.reactive.api import (
+from rekuest_next.actors.context import (
     progress,
     log,
     useInstanceID,
@@ -45,15 +45,27 @@ ARKITEKT_NETWORK = os.getenv("ARKITEKT_NETWORK", "next_default")
 
 ARKITEKT_APPTAINER_CONFIG = yaml.safe_load(open("apptainer_config.yaml"))
 
+# Extract URL from command line arguments
+def get_arkitekt_url():
+    """Get the Arkitekt URL from command line args or environment"""
+    # Check command line arguments for --url
+    for i, arg in enumerate(sys.argv):
+        if arg == '--url' and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    # Fallback to environment variable or default
+    return os.getenv("ARKITEKT_URL", "go.arkitekt.live")
+
+ARKITEKT_URL = get_arkitekt_url()
+
 @context
 @dataclass
 class ArkitektContext:
     backend: Backend
     docker: None
     instance_id: str
+    endpoint_url: str
     gateway: str = field(default=ARKITEKT_GATEWAY)
     network: str = field(default=ARKITEKT_NETWORK)
-    endpoint_url: str = field(default="arkitekt.compeng.uni-frankfurt.de")
 
 
 @startup
@@ -69,6 +81,7 @@ async def on_startup(instance_id) -> ArkitektContext:
         network=ARKITEKT_NETWORK,
         backend=x,
         instance_id=instance_id,
+        endpoint_url=ARKITEKT_URL,
     )
 
 
@@ -78,7 +91,7 @@ async def container_checker(context: ArkitektContext):
     print("Check for containers that are dno longer pods?")
     pod_status: Dict[str, PodStatus] = {}
     while True:
-        apptainer_instance_list = subprocess.run([ARKITEKT_APPTAINER_CONFIG["ARKITEKT_APPTAINER_BIN"], "instance", "list", "--json"], text=True, capture_output=True)
+        apptainer_instance_list = subprocess.run([_get_apptainer_binary(), "instance", "list", "--json"], text=True, capture_output=True)
         containers = json.loads(apptainer_instance_list.stdout)
         for container in containers["instances"]:
             # if not container["instance"].startswith("arkitekt-"):
@@ -99,7 +112,7 @@ async def container_checker(context: ArkitektContext):
                         await adump_logs(p.id, logs)
             except Exception as e:
                 print("Error updating pod status", e)
-                subprocess.run(_get_command(variant="instance_stop", context=context, pod=p))
+                # subprocess.run(_get_command(variant="instance_stop", context=context, pod=p))
         else:
             if containers == []: print("No containers to check")
 
@@ -197,14 +210,12 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
     )
 
     token = create_client(
-        DevelopmentClientInput(
-            manifest=ManifestInput(
-                identifier=release.app.identifier,
-                version=release.version,
-                scopes=flavour.manifest["scopes"],
-            ),
+        manifest=ManifestInput(
+            identifier=release.app.identifier,
+            version=release.version,
+            scopes=flavour.manifest["scopes"],
             requirements=[Requirement(**req.model_dump()) for req in flavour.requirements],
-        )
+        ),
     )
 
     print(_get_command(variant="start_instance", context=context, container_name=container_name, release=release))
@@ -239,13 +250,14 @@ def deploy(release: Release, context: ArkitektContext) -> Pod:
     # print(apptainer_run_command)
     print("Running the command")
     with open(f"apptainer-{container_name}.log", "w") as f:
-        process = subprocess.run(
-            _get_command(variant="exec_command", release=release, context=context, container_name=container_name, pod=z),
+        process = subprocess.Popen(
+            _get_command(variant="exec_command", release=release, context=context, container_name=container_name, pod=z, token=token),
             env=dict(os.environ)| ARKITEKT_APPTAINER_CONFIG,
             stdout=f,
+            stderr=subprocess.STDOUT,
             )
 
-    print(process)
+    print(f"Started Apptainer Instance as a background process with PID {process.pid}")
     print(f"Deployed container with id {container_name} on network {network} with token {token} and target url {str(context.endpoint_url)}")
 
     progress(90)
@@ -264,7 +276,7 @@ def progresso():
     return None
 
 
-def _get_command(variant: str, context, container_name=None, pod=None, release=None) -> list:
+def _get_command(variant: str, context, container_name=None, pod=None, release=None, token=None) -> list:
     """
 
     """
@@ -281,6 +293,9 @@ def _get_command(variant: str, context, container_name=None, pod=None, release=N
             _get_apptainer_binary(),
             "instance",
             "start",
+            "--nv",
+            "--bind",
+            "/etc/pki/tls/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt",
             "--writable-tmpfs",
             f"docker://{_get_flavour(release.flavours).image.image_string}",
             container_name,
@@ -300,12 +315,20 @@ def _get_command(variant: str, context, container_name=None, pod=None, release=N
             "exec",
             "--pwd",
             str(docker_inspect_workdir.stdout.replace("'","").replace("\n","")),
+            "--contain",
+            "--env",
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+            "--nv",
+            "--bind",
+            "/etc/pki/tls/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt",
             "instance://"+container_name,
             "arkitekt-next",
             "run",
             "prod",
             "--url",
             f"{context.endpoint_url}",
+            "--token",
+            f"{token.token if token else ''}",
         ]
         command = _get_apptainer_params(command=command, flavour=_get_flavour(release.flavours), position=4)
     return command
@@ -330,8 +353,9 @@ def _get_apptainer_params(command, flavour, position: int = -1):
         "cuda": "--nv",
         "amd": None,
         "oneapi": None,
+        "vanilla": None,
     }
-    if params[flavour.name] != None:
+    if params.get(flavour.name) != None:
         command.insert(position, params[flavour.name])
     return command
 
@@ -351,7 +375,15 @@ def _get_flavour(flavours):
     def find_flavour(flavours, preferred_order):
         return next((flavour for name in preferred_order for flavour in flavours if flavour.name == name), None)
 
-    return find_flavour(flavours, list(ARKITEKT_APPTAINER_CONFIG["ARKITEKT_FLAVOUR"].split(",")))
+    preferred_flavours = list(ARKITEKT_APPTAINER_CONFIG["ARKITEKT_FLAVOUR"].split(","))
+    flavour = find_flavour(flavours, preferred_flavours)
+    
+    # Fall back to first available flavour if preferred not found
+    if flavour is None and flavours:
+        print(f"Warning: No flavour matching {preferred_flavours} found. Falling back to {flavours[0].name}")
+        flavour = flavours[0]
+    
+    return flavour
 
 
 if __name__ == "__main__":
